@@ -9,6 +9,8 @@ An example showing how to write a simple program using the Nordic Semiconductor
 
 import asyncio
 import sys
+import termios
+import tty
 from itertools import count, takewhile
 from typing import Iterator
 
@@ -59,7 +61,7 @@ async def uart_terminal():
             task.cancel()
 
     def handle_rx(_: BleakGATTCharacteristic, data: bytearray):
-        print("received:", data)
+        print(data.decode("utf-8"), end="", flush=True)
 
     async with BleakClient(device, disconnected_callback=handle_disconnect) as client:
         await client.start_notify(UART_TX_CHAR_UUID, handle_rx)
@@ -67,6 +69,9 @@ async def uart_terminal():
         print("Connected, start typing and press ENTER...")
 
         loop = asyncio.get_running_loop()
+        fd = sys.stdin.fileno()
+        fd_settings = termios.tcgetattr(fd)
+        tty.setraw(fd)
         nus = client.services.get_service(UART_SERVICE_UUID)
         rx_char = nus.get_characteristic(UART_RX_CHAR_UUID)
 
@@ -74,10 +79,10 @@ async def uart_terminal():
             # This waits until you type a line and press ENTER.
             # A real terminal program might put stdin in raw mode so that things
             # like CTRL+C get passed to the remote device.
-            data = await loop.run_in_executor(None, sys.stdin.buffer.readline)
+            data = await loop.run_in_executor(None, sys.stdin.buffer.read, 1)
 
-            # data will be empty on EOF (e.g. CTRL+D on *nix)
-            if not data:
+            # Exit on CTRL+D
+            if data[0] == 0x04:
                 break
 
             # some devices, like devices running MicroPython, expect Windows
@@ -88,11 +93,12 @@ async def uart_terminal():
             # single BLE packet. We can use the max_write_without_response_size
             # property to split the data into chunks that will fit.
 
+            # TODO: Buffer data until new-line or special character is received.
             for s in sliced(data, rx_char.max_write_without_response_size):
                 await client.write_gatt_char(rx_char, s, response=False)
 
-            print("sent:", data)
-
+        # Restore stdin settings back to normal
+        termios.tcsetattr(fd, termios.TCSADRAIN, fd_settings)
 
 if __name__ == "__main__":
     try:
